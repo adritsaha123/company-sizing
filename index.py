@@ -21,12 +21,13 @@ CBP_COLUMN_NAMES = {
     "PAYANN": "annual_payroll_thousands",
     "state": "state_code",
     "NAICS2017": "naics_code",
+    "INDLEVEL": "industry_level",
 }
 
 def fetch_cbp_data(year, naics_code):
     """ Fetches County Business Patterns (CBP) data for a given year and NAICS code from the US Census API. """
     params = {
-        "get": "EMP,ESTAB,PAYANN",
+        "get": "EMP,ESTAB,PAYANN,INDLEVEL",
         "for": "state:*",
         "NAICS2017": naics_code,
         "key": KEY,
@@ -42,19 +43,23 @@ def fetch_cbp_data(year, naics_code):
     return df
 
 def clean_cbp_data(df, year):
-    """ Cleans the CBP DataFrame by converting numeric columns and filtering out territories. """
+    """Converts numbers, removes territories, renames columns, adds the year and checks for duplicates."""
 
     df = df.copy()
     df['EMP'] = pd.to_numeric(df['EMP'], errors='coerce')
     df['ESTAB'] = pd.to_numeric(df['ESTAB'], errors='coerce')
     df['PAYANN'] = pd.to_numeric(df['PAYANN'], errors='coerce')
+    df['INDLEVEL'] = pd.to_numeric(df['INDLEVEL'], errors='coerce')
 
     df = df[~df['state'].isin(CBP_TERRITORY_CODES)]
 
     df = df.rename(columns=CBP_COLUMN_NAMES)
     df["year"] = year
-    df = df.sort_values("state_code")
+    df = df.sort_values(["naics_code", "state_code", "year"])
     df = df.reset_index(drop=True)
+    duplicate_rows = df.duplicated(subset=["naics_code", "state_code", "year"])
+    if duplicate_rows.any():
+        raise ValueError(f"{duplicate_rows.sum()} duplicate rows found in the cleaned DataFrame.")
     return df
 
 def save_data(df, table_name):
@@ -64,9 +69,10 @@ def save_data(df, table_name):
 
 def main():
     year = 2022
-    raw = fetch_cbp_data(year, "72")
+    raw = fetch_cbp_data(year, "*")
     df = clean_cbp_data(raw, year)
     save_data(df, "cbp")
+    print(f"Saved {len(df)} rows ({df['naics_code'].nunique()} NAICS codes) to cbp")
 
 if __name__ == "__main__":
     main()
