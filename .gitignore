@@ -1,3 +1,5 @@
 .env
 .venv
 *.duckdb
+.vscode
+__pycache__/
