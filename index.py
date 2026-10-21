@@ -1,5 +1,6 @@
 import os
 from dotenv import load_dotenv
+import numpy as np
 import requests
 import pandas as pd
 import duckdb
@@ -23,6 +24,15 @@ CBP_COLUMN_NAMES = {
     "NAICS2017": "naics_code",
     "INDLEVEL": "industry_level",
 }
+ECN_COLUMN_NAMES = {
+    "EMP": "employment",
+    "ESTAB": "establishments",
+    "PAYANN": "annual_payroll_thousands",
+    "state": "state_code",
+    "NAICS2022": "naics_code",
+    "INDLEVEL": "industry_level",
+    "RCPTOT": "revenue_thousands",
+}
 
 def fetch_cbp_data(year, naics_code):
     """ Fetches County Business Patterns (CBP) data for a given year and NAICS code from the US Census API. """
@@ -36,6 +46,27 @@ def fetch_cbp_data(year, naics_code):
     if response.status_code != 200:
         raise ValueError(
             f"CBP request failed for year={year}, naics={naics_code}: "
+            f"status {response.status_code} {response.text}"
+        )
+    data = response.json()
+    df = pd.DataFrame(data[1:], columns=data[0])
+    return df
+
+def fetch_ecn_data(year, naics_code):
+    """ Fetches Economic Census (ECN) data for a given year and NAICS code from the US Census API. """
+    params = {
+        "get": "EMP,ESTAB,PAYANN,INDLEVEL,RCPTOT",
+        "for": "state:*",
+        "NAICS2022": naics_code,
+        "key": KEY,
+        "TAXSTAT": "00",
+        "TYPOP": "00",
+        "GEOCOMP": "00",
+    }
+    response = requests.get(f"https://api.census.gov/data/{year}/ecnbasic", params=params)
+    if response.status_code != 200:
+        raise ValueError(
+            f"ECN request failed for year={year}, naics={naics_code}: "
             f"status {response.status_code} {response.text}"
         )
     data = response.json()
@@ -62,6 +93,32 @@ def clean_cbp_data(df, year):
         raise ValueError(f"{duplicate_rows.sum()} duplicate rows found in the cleaned DataFrame.")
     return df
 
+def clean_ecn_data(df, year):
+    """Converts numbers, removes territories, renames columns, adds the year and checks for duplicates."""
+
+    df = df.copy()
+    df['EMP'] = pd.to_numeric(df['EMP'], errors='coerce')
+    df['ESTAB'] = pd.to_numeric(df['ESTAB'], errors='coerce')
+    df['PAYANN'] = pd.to_numeric(df['PAYANN'], errors='coerce')
+    df['INDLEVEL'] = pd.to_numeric(df['INDLEVEL'], errors='coerce')
+    df['RCPTOT'] = pd.to_numeric(df['RCPTOT'], errors='coerce')
+
+    for col in ['RCPTOT', 'ESTAB', 'EMP', 'PAYANN']:
+        df[col] = df[col].replace(0, np.nan)
+
+    df = df[df['INDLEVEL'] <= 6]
+
+    df = df.drop(columns=['TAXSTAT', 'TYPOP', 'GEOCOMP'])
+
+    df = df.rename(columns=ECN_COLUMN_NAMES)
+    df["year"] = year
+    df = df.sort_values(["naics_code", "state_code", "year"])
+    df = df.reset_index(drop=True)
+    duplicate_rows = df.duplicated(subset=["naics_code", "state_code", "year"])
+    if duplicate_rows.any():
+        raise ValueError(f"{duplicate_rows.sum()} duplicate rows found in the cleaned DataFrame.")
+    return df
+
 def save_data(df, table_name):
     """ Saves the DataFrame to a DuckDB table. """
     with duckdb.connect(DB_PATH) as con:
@@ -69,10 +126,15 @@ def save_data(df, table_name):
 
 def main():
     year = 2022
-    raw = fetch_cbp_data(year, "*")
-    df = clean_cbp_data(raw, year)
-    save_data(df, "cbp")
-    print(f"Saved {len(df)} rows ({df['naics_code'].nunique()} NAICS codes) to cbp")
+    raw_cbp = fetch_cbp_data(year, "*")
+    df_cbp = clean_cbp_data(raw_cbp, year)
+    save_data(df_cbp, "cbp")
 
+    raw_ecn = fetch_ecn_data(year, "*")
+    df_ecn = clean_ecn_data(raw_ecn, year)
+    save_data(df_ecn, "ecn")
+
+    print(f"Saved {len(df_cbp)} rows ({df_cbp['naics_code'].nunique()} NAICS codes) to cbp")
+    print(f"Saved {len(df_ecn)} rows ({df_ecn['naics_code'].nunique()} NAICS codes) to ecn")
 if __name__ == "__main__":
     main()
